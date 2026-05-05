@@ -1,0 +1,13 @@
+*__pycache__*
+*.vscode*
+grpo_out/
+model_outputs/
+models/
+synthetic_data/
+data/*/
+outputs/
+wandb/
+key.txt
+*.csv
+*.parquet
+*.pkl
