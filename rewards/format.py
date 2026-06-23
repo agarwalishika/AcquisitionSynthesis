@@ -63,6 +63,6 @@ def parse_html(solution_str):
 
 def compute_score(data_source, solution_str, ground_truth, extra_info=None):
     if parse(solution_str) != None:
-        return 1
+        return 1.0
     else:
-        return -5
+        return 0.0

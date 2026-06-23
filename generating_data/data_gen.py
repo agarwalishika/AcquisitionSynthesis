@@ -2,7 +2,6 @@ import os
 import argparse
 import json
 import re
-import gc
 
 from config import TRAINING_DATA_DIR
 import numpy as np
@@ -12,7 +11,6 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 from collections import Counter, defaultdict
 from vllm import LLM, SamplingParams
-from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
@@ -41,17 +39,19 @@ def parse_answer(text):
         
         match = sample_pattern.search(text)
         if not match:
-            return ""
+            return None
         
         return match.group(1).strip()
     except:
-        return ""
+        return None
 
 def parse_html(generated_samples, synthetic_data, questions):
     for text in generated_samples:
         try:
             sample_pattern = re.compile(
-                r'<question>(.*?)</question>\s*',
+                r'<question>(.*?)</question>\s*'
+                r'<reasoning>(.*?)</reasoning>\s*'
+                r'<answer>(.*?)</answer>\s*',
                 re.DOTALL | re.IGNORECASE
             )
             
@@ -74,7 +74,7 @@ def generate_questions(model_name, dataset_name, size):
     synthetic_data = []
     questions = []
 
-    model = LLM(model_name, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=0.7, max_model_len=4096)
+    model = LLM(model_name, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=0.5, max_model_len=4096)
     sampling_params = SamplingParams(temperature=0.8, max_tokens=2048)
 
     while len(synthetic_data) < size:
@@ -84,9 +84,6 @@ def generate_questions(model_name, dataset_name, size):
         print(f"{len(synthetic_data)}/{size} questions collected...")
 
     del model, sampling_params
-    destroy_model_parallel()
-    destroy_distributed_environment()
-    gc.collect()
     torch.cuda.empty_cache()
 
     return [d['question'] for d in synthetic_data]
@@ -96,19 +93,9 @@ def generate_questions(model_name, dataset_name, size):
 
 def apply_chat_template(model_name, prompts):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    mcot_instruction = lambda question: (
-        "Answer the following question. Write each reasoning step in a different language from: English, Spanish, French, German, Arabic, Italian, or Portuguese. "
-        "Example:\n<question>A café orders 4 boxes of croissants on Monday and 7 boxes on Tuesday. Each box costs $9. How much did the café spend in total?<question>\n"
-        "<reasoning>The goal is to find the total amount spent across both days. Primero, sumamos las cajas de ambos días: 4 + 7 = 11 cajas en total. Chaque boîte coûte 9 $, donc il faut multiplier le nombre de boîtes par le prix unitaire. Quindi calcoliamo: 11 × 9 = 99. Observa que el número de piezas en cada caja no es necesario para calcular el costo total, sino solo el número de cajas y su precio. Portanto, o café gastou um total de 99 dólares.\n </reasoning>"
-        "<answer> $99. </answer>"
-        "Place all reasoning inside <reasoning> tags and your final answer in English inside <answer> tags.\n"
-        f"<question> {question} </question>\n"
-        "<reasoning> </reasoning>\n"
-        "<answer> </answer>"
-    )
     return [
         tokenizer.apply_chat_template(
-            [{"role": "user", "content": mcot_instruction(p)}],
+            [{"role": "user", "content": f"Answer the following question. Output your answer in <reasoning> </reasoning> and <answer> </answer> tags.\n<question> {p} </question>"}],
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -156,10 +143,7 @@ def generate_k_responses(
         for idx, out in zip(bad_indices, retry_outputs):
             questions[idx]["generations"] = [out.outputs[i].text.strip() for i in range(k)]
 
-    del llm, sp
-    destroy_model_parallel()
-    destroy_distributed_environment()
-    gc.collect()
+    del llm
     torch.cuda.empty_cache()
     return questions
 
@@ -249,13 +233,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate synthetic questions then label them with answers using vLLM."
     )
-    parser.add_argument("--dataset_name", type=str, default="nemotron_stem",
+    parser.add_argument("--dataset_name", type=str, default="alpaca",
                         help="Path to seed parquet dataset.")
-    parser.add_argument("--acquisition_model_name", type=str, default="ishikauniphore/acquisition_qwen7bins_nemotron_mcot",
+    parser.add_argument("--acquisition_model_name", type=str,
                         help="HuggingFace model name used for question generation.")
-    parser.add_argument("--answer_model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct",
+    parser.add_argument("--answer_model_name", type=str, default="Qwen/Qwen2.5-3B",
                         help="HuggingFace model name used for answer generation. Defaults to --model_name.")
-    parser.add_argument("--size", type=int, default=5,
+    parser.add_argument("--size", type=int, default=1000,
                         help="Number of question-answer pairs to produce.")
     parser.add_argument("--output_file", type=str, default="data.csv",
                         help="Path for the output CSV. Auto-generated from model/dataset names if not provided.")
@@ -284,7 +268,7 @@ def main():
     # if not os.path.exists(output_file):
     if args.questions_file is None:
         print("=== Step 1: Generating questions ===")
-        questions = generate_questions(args.acquisition_model_name, f"/home/ubuntu/AcquisitionSynthesis/data/{args.dataset_name}/valid.parquet", args.size)
+        questions = generate_questions(args.acquisition_model_name, f"/home/ec2-user/grpo_synthesis/data/{args.dataset_name}/valid.parquet", args.size)
     else:
         print(f"=== Step 1: Parsing questions from {args.questions_file} ===")
         questions = pd.read_parquet(args.questions_file, engine='pyarrow')['question']

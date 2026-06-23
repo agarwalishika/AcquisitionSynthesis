@@ -112,7 +112,7 @@ def rl_train(file_name, model_name, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file_name", default= "/home/ec2-user/grpo_synthesis/generating_data/training_data/qwen3bins_numina_confidence.parquet", help="Path to CSV file with 'question' and 'answer' columns")
+    parser.add_argument("--file_name", default= "/home/ubuntu/AcquisitionSynthesis/generating_data/training_data/qwen3bins_numina_confidence.parquet", help="Path to CSV file with 'question' and 'answer' columns")
     parser.add_argument("--student_model", default="meta-llama/Llama-3.1-8B-Instruct", help="Directory to save trained model")
     parser.add_argument("--output_dir", default="/tmp/sft_models/", help="Directory to save trained model")
     args = parser.parse_args()

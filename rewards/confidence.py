@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/ec2-user/grpo_synthesis/rewards/')
+sys.path.append('/home/ubuntu/AcquisitionSynthesis/rewards/')
 from format import parse
 from repeat_penalty import compute_repeat_penalty, compute_grounding_regularizer
 import requests

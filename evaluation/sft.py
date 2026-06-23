@@ -1,9 +1,12 @@
 import os
 import argparse
+from accelerate import PartialState
 import pandas as pd
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
-from trl import SFTTrainer, SFTConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from trl import SFTTrainer
+import torch
 
 def format_prompt(example, tokenizer):
     messages = [
@@ -29,46 +32,64 @@ def sft_train(file_name, model_name, num_epochs=5, output_dir="/tmp/sft_models/"
     save_path = os.path.join(output_dir, run_name)
     os.makedirs(save_path, exist_ok=True)
 
-    sft_config = SFTConfig(
+    sft_config = TrainingArguments(
         output_dir=save_path,
         num_train_epochs=num_epochs,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,
         learning_rate=2e-5,
         warmup_ratio=0.05,
         lr_scheduler_type="cosine",
         logging_steps=10,
         save_strategy="epoch",
         bf16=True,
-        dataset_text_field="text",
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        optim="paged_adamw_8bit",
         report_to="none",
     )
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map={"": PartialState().process_index},
+    )
+    model = prepare_model_for_kbit_training(model)
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        target_modules="all-linear",
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, lora_config)
 
     trainer = SFTTrainer(
         model=model,
         args=sft_config,
         train_dataset=dataset,
-        processing_class=tokenizer
+        tokenizer=tokenizer,
+        dataset_text_field="text",
+        max_seq_length=1024,
     )
 
     trainer.train()
     trainer.save_model(save_path)
     tokenizer.save_pretrained(save_path)
     print(f"Model saved to {save_path}")
-
-    HF_USERNAME = os.getenv("HF_USERNAME")
-    if student_name is None:
-        student_name = save_path.split("/")[-1]
-    model.push_to_hub(f"{HF_USERNAME}/acquisition_student_{student_name}")
-    tokenizer.push_to_hub(f"{HF_USERNAME}/acquisition_student_{student_name}")
     return save_path
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file_name", help="Path to CSV file with 'question' and 'answer' columns", default="/home/ec2-user/grpo_synthesis/generating_data/ins_train/random_OpenR1-Math-220k_1000.parquet")
+    parser.add_argument("--file_name", help="Path to CSV file with 'question' and 'answer' columns", default="/home/ubuntu/AcquisitionSynthesis/generating_data/ins_train/random_OpenR1-Math-220k_1000.parquet")
     parser.add_argument("--model_name",  default="Qwen/Qwen2.5-3b-Instruct")
     parser.add_argument("--output_dir", default="/tmp/sft_models/", help="Directory to save trained model")
     parser.add_argument("--num_epochs", type=int, default=5)

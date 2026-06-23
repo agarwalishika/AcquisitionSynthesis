@@ -52,7 +52,7 @@ if __name__ == "__main__":
     parser.add_argument("--hdfs_dir", default=None)
     parser.add_argument("--local_dataset_path", default=None, help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="/home/ec2-user/grpo_synthesis/data/alpaca/", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="/home/ubuntu/AcquisitionSynthesis/data/alpaca/", help="The save directory for the preprocessed dataset."
     )
     parser.add_argument("--train_size", type=int, default=500)
     parser.add_argument("--prompt", type=str, default="combined")
@@ -159,11 +159,11 @@ if __name__ == "__main__":
     test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
     valid_dataset.to_parquet(os.path.join(local_save_dir, "valid.parquet"))
 
-    records = create_dataset_jsonl(filtered.select(range(TRAIN_SIZE)), "train")
-    for record in records:
-        with open('/home/ec2-user/prismatic-synthesis/prismatic-synthesis/data/datasets/alpaca_seed.jsonl', 'a+') as f:
-            f.write(json.dumps(record))
-            f.write("\n")
+    # records = create_dataset_jsonl(filtered.select(range(TRAIN_SIZE)), "train")
+    # for record in records:
+    #     with open('/home/ec2-user/prismatic-synthesis/prismatic-synthesis/data/datasets/alpaca_seed.jsonl', 'a+') as f:
+    #         f.write(json.dumps(record))
+    #         f.write("\n")
 
     if hdfs_dir is not None:
         makedirs(hdfs_dir)

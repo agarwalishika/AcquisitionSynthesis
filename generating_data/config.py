@@ -2,7 +2,7 @@ import numpy as np
 import datasets
 import pandas as pd
 
-TRAINING_DATA_DIR = "/home/ec2-user/grpo_synthesis/generating_data/training_data/"
+TRAINING_DATA_DIR = "/home/ubuntu/AcquisitionSynthesis/generating_data/training_data/"
 
 def extract_last_boxed(s):
     try:

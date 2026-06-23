@@ -53,7 +53,7 @@ if __name__ == "__main__":
     parser.add_argument("--hdfs_dir", default=None)
     parser.add_argument("--local_dataset_path", default=None, help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="/home/ec2-user/grpo_synthesis/data/openr1math/", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="/home/ubuntu/AcquisitionSynthesis/data/openr1math/", help="The save directory for the preprocessed dataset."
     )
     parser.add_argument("--train_size", type=int, default=500)
     parser.add_argument("--prompt", type=str, default="current")

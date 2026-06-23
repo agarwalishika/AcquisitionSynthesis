@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/ec2-user/grpo_synthesis/rewards/')
+sys.path.append('/home/ubuntu/AcquisitionSynthesis/rewards/')
 import requests
 from format import parse
 import os

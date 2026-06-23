@@ -126,7 +126,7 @@ if __name__ == "__main__":
     argparser.add_argument("--size", type=int, default=1000)
     args = argparser.parse_args()
 
-    dataset = load_data(f"/home/ec2-user/grpo_synthesis/data/{args.data}/train.parquet")
+    dataset = load_data(f"/home/ubuntu/AcquisitionSynthesis/data/{args.data}/train.parquet")
     # dataset = dataset[:100]
     CACHE_FILE = 'dataenvgym_cache.csv'
 

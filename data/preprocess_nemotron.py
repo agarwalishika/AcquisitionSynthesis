@@ -16,14 +16,11 @@ Preprocess the GSM8k dataset to parquet format
 """
 
 import argparse
+import numpy as np
 import os
-import re
-import datetime
 from prompt_variations import *
 import datasets
-import json
 from verl.utils.hdfs_io import copy, makedirs
-import pyarrow as pa
 
 def extract_last_boxed(s):
     try:
@@ -40,7 +37,7 @@ if __name__ == "__main__":
     parser.add_argument("--hdfs_dir", default=None)
     parser.add_argument("--local_dataset_path", default=None, help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="/home/ubuntu/AcquisitionSynthesis/data/medmcqa/", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="/home/ubuntu/AcquisitionSynthesis/data/nemotron_math/", help="The save directory for the preprocessed dataset."
     )
     parser.add_argument("--train_size", type=int, default=500)
     parser.add_argument("--prompt", type=str, default="current")
@@ -48,14 +45,44 @@ if __name__ == "__main__":
     args = parser.parse_args()
     local_dataset_path = args.local_dataset_path
 
-    data_source = "openlifescienceai/medmcqa"
-    full_dataset = datasets.load_dataset(data_source)['train']
-    full_dataset = full_dataset.map(lambda x: {'query': f"Question: {x['question']}\nA. {x['opa']}\nB. {x['opb']}\nC. {x['opc']}\nD. {x['opd']}"})
-    names = full_dataset.features['cop'].names  # ['a', 'b', 'c', 'd']
-    full_dataset = full_dataset.map(lambda x: {'answer': names[x['cop']]})
-    full_dataset = full_dataset.map(lambda x: {'response': f"{x['answer'].upper()}. {x['op'+ x['answer']]}"})
-    full_dataset = full_dataset.rename_column("exp", "reasoning")
-    full_dataset = full_dataset.filter(lambda x: x['reasoning'] is not None)
+    data_source = "nvidia/Nemotron-Post-Training-Dataset-v2"
+    full_dataset = datasets.load_dataset(data_source)
+
+    if "stem" in args.local_save_dir:
+        stem = full_dataset['stem']
+        stem = stem.select(np.arange(0,10000))
+        stem = stem.rename_column("reasoning", "is_reasoning_on")
+        stem = stem.map(lambda x: {'query': x['messages'][1]['content']})
+        stem = stem.map(lambda x: {'reasoning': x['messages'][2]['content'].split("\n\n\\boxed")[0].strip()})
+        stem = stem.map(lambda x: {'response': x['messages'][2]['content'][x['messages'][2]['content'].rfind("\\boxed"):].strip()})
+        final_prompt_template = STEM_PROMPT
+        final_full_dataset = stem
+
+    elif "math" in args.local_save_dir:
+        math = full_dataset['math']
+        math = math.select(np.arange(0,10000))
+        math = math.rename_column("reasoning", "is_reasoning_on")
+        math = math.map(lambda x: {'query': x['messages'][1]['content']})
+        math = math.map(lambda x: {'reasoning': x['messages'][2]['content'].split("\n\n\\boxed")[0].strip()})
+        math = math.map(lambda x: {'response': x['messages'][2]['content'][x['messages'][2]['content'].rfind("\\boxed"):].strip()})
+        final_prompt_template = MATH_PROMPT
+        final_full_dataset = math
+
+    elif "chat" in args.local_save_dir:
+        chat = full_dataset['chat']
+        chat = chat.select(np.arange(210000, 220000))
+        chat = chat.filter(lambda x: "on" in x['reasoning'])
+        chat = chat.rename_column("reasoning", "is_reasoning_on")
+        chat = chat.map(lambda x: {'query': x['messages'][1]['content']})
+        chat = chat.map(lambda x: {'reasoning': x['messages'][2]['content'].split("<think>")[-1].split("</think>")[0].strip()})
+        chat = chat.map(lambda x: {'response': x['messages'][2]['content'].split("</think>")[-1].strip()})
+        final_prompt_template = CHAT_PROMPT
+        final_full_dataset = chat
+
+    else:
+        print('um what are you doing?')
+        0/0
+
 
     only_grounding = lambda q, a: f"""{{
     "question": "{q}",
@@ -72,7 +99,7 @@ if __name__ == "__main__":
                 "data_source": data_source + "_" + args.prompt,
                 "prompt": [{
                     "role": "user",
-                    "content": MEDICAL_PROMPT(q, a, r)
+                    "content": final_prompt_template(q, a, r)
                 }],
                 "ability": "data_synthesis",
                 "reward_model": {"style": "rule", "ground_truth": ""},
@@ -94,7 +121,6 @@ if __name__ == "__main__":
         for i in range(len(ds)):
             q = ds[i]['query']
             a = ds[i]['response']
-            a = ds[i]['reasoning']
 
             records.append({
                 "prompt": q,
@@ -107,19 +133,19 @@ if __name__ == "__main__":
 
 
     TRAIN_SIZE = args.train_size
-    TEST_SIZE = 5000
+    TEST_SIZE = 1000
     VALID_SIZE = 100
-    MAX_TOKENS = 5096
+    MAX_TOKENS = 4096
 
     # Use ~4 chars per token as a rough estimate to filter prompts
     def is_short_enough(example):
         q = example.get('query', '').strip().replace("\n", " ")
         a = example.get('response', '').strip().replace("\n", " ")
         r = example.get('reasoning', '').strip().replace("\n", " ")
-        content = MEDICAL_PROMPT(q, a, r)
+        content = MATH_PROMPT(q, a, r)
         return len(content) // 2 < MAX_TOKENS
 
-    filtered = full_dataset.filter(is_short_enough)
+    filtered = final_full_dataset.filter(is_short_enough)
     total_needed = (TRAIN_SIZE + TEST_SIZE + VALID_SIZE)
     assert len(filtered) >= total_needed, (
         f"Not enough examples after filtering: {len(filtered)} < {total_needed}"
@@ -128,7 +154,7 @@ if __name__ == "__main__":
     train_dataset = create_dataset(filtered.select(range(TRAIN_SIZE)), "train")
     valid_dataset = create_dataset(filtered.select(range(TRAIN_SIZE, TRAIN_SIZE + VALID_SIZE)), "valid")
     test_dataset = create_dataset(filtered.select(range(len(filtered)-TEST_SIZE-1, len(filtered))), "test")
-    all_dataset = create_dataset(filtered.select(range(0, len(filtered)-TEST_SIZE)), "all").select(range(0, 10000))
+    # all_dataset = create_dataset(filtered.select(range(0, len(filtered)-TEST_SIZE)), "all").select(range(0, 10000))
 
     hdfs_dir = args.hdfs_dir
     local_save_dir = args.local_dir
@@ -140,7 +166,7 @@ if __name__ == "__main__":
     train_dataset.to_parquet(os.path.join(local_save_dir, "train.parquet"))
     valid_dataset.to_parquet(os.path.join(local_save_dir, "valid.parquet"))
     test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
-    all_dataset.to_parquet(os.path.join(local_save_dir, "all.parquet"))
+    # all_dataset.to_parquet(os.path.join(local_save_dir, "all.parquet"))
 
     # records = create_dataset_jsonl(filtered.select(range(TRAIN_SIZE)), "train")
     # for record in records:

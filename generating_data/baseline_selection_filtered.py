@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/ec2-user/grpo_synthesis')
+sys.path.append('/home/ubuntu/AcquisitionSynthesis')
 from argparse import ArgumentParser
 import os
 from config import *
@@ -76,8 +76,8 @@ if __name__ == "__main__":
     argparser.add_argument("--size", type=int, default=1000)
     args = argparser.parse_args()
 
-    train_data = load_data(f"/home/ec2-user/grpo_synthesis/data/{args.data}/all.parquet")
-    filtered = filter(train_data, args.size, f"/home/ec2-user/grpo_synthesis/data/{args.data}/train.parquet", args.dir_name)
+    train_data = load_data(f"/home/ubuntu/AcquisitionSynthesis/data/{args.data}/all.parquet")
+    filtered = filter(train_data, args.size, f"/home/ubuntu/AcquisitionSynthesis/data/{args.data}/train.parquet", args.dir_name)
 
     def format(col):
         filtered[col] = filtered[col].apply(lambda x: x.replace("\n", ""))

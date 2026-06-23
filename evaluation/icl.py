@@ -82,7 +82,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--model_name", default="/tmp/sft_models/random_OpenR1-Math-220k_100")
     parser.add_argument("--train_dataset_name", default=None)
-    parser.add_argument("--test_dataset_name", default="/home/ec2-user/grpo_synthesis/data/numina/test.parquet")
+    parser.add_argument("--test_dataset_name", default="/home/ubuntu/AcquisitionSynthesis/data/numina/test.parquet")
     parser.add_argument("--use_chat_template", action="store_true",
                         help="Apply chat template to prompts (use for SFT-trained models)")
     args = parser.parse_args()
