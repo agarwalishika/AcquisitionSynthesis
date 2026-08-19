@@ -31,31 +31,16 @@ def extract_solution(solution_str):
     final_solution = final_solution.split("#### ")[1].replace(",", "")
     return final_solution
 
-def map_str_to_prompt(prompt):
-    mapping = {
-        "basic": BASIC,
-        "detailed": DETAILED_INSTRUCTION,
-        "html": HTML_TAGS,
-        "negpos": NEG_POS_EXAMPLE,
-        "persona": PERSONA_ADOPTED,
-        "multipleicl": MULTIPLE_ICL,
-        "combined": COMBINED_ALPACA,
-        "verydetailed": VERY_DETAILED_INSTRUCTION,
-        "combineddetailed": COMBINED_DETAILED
-    }
-
-    return mapping[prompt]
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", default=None, help="The save directory for the preprocessed dataset.")
     parser.add_argument("--hdfs_dir", default=None)
     parser.add_argument("--local_dataset_path", default=None, help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="/home/ec2-user/grpo_synthesis/data/alpaca/", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="alpaca/", help="The save directory for the preprocessed dataset."
     )
     parser.add_argument("--train_size", type=int, default=500)
-    parser.add_argument("--prompt", type=str, default="combined")
+    parser.add_argument("--prompt", type=str, default="current")
 
     args = parser.parse_args()
     local_dataset_path = args.local_dataset_path
@@ -67,9 +52,6 @@ if __name__ == "__main__":
     full_dataset = full_dataset.map(lambda x: {"query": x["instruction"] + x["input"]})
     full_dataset = full_dataset.rename_column("output", "response")
 
-
-    instruction_following = map_str_to_prompt(args.prompt)
-
     only_grounding = lambda q, a: f"""{{
     "question": "{q}",
     "answer": "{a}"
@@ -77,21 +59,15 @@ if __name__ == "__main__":
 
     def create_dataset(ds, split):
         records = []
-        for i in range(0, len(ds), 2):
-            if args.prompt == "multipleicl":
-                q = [ds[i]['query'], ds[i+1]['query']]
-                a = [ds[i]['response'], ds[i+1]['response']]
-            if args.prompt == "combined":
-                q = [ds[i]['query'], ds[i+1]['query']]
-                a = [ds[i]['response'], ds[i+1]['response']]
-            else:
-                q = ds[i]['query']
-                a = ds[i]['response']
+        for i in range(len(ds)):
+            q = ds[i]['query']
+            a = ds[i]['response']
+            # r = ds[i]['reasoning']
             records.append({
                 "data_source": data_source + "_" + args.prompt,
                 "prompt": [{
                     "role": "user",
-                    "content": instruction_following(q, a)
+                    "content": LMARENA_PROMPT(q, a)
                 }],
                 "ability": "data_synthesis",
                 "reward_model": {"style": "rule", "ground_truth": ""},
@@ -100,7 +76,8 @@ if __name__ == "__main__":
                         "index": len(records) + 1,
                         "question": only_grounding(q, a),
                         "grounding_question": q,
-                        "grounding_answer": a
+                        "grounding_answer": a,
+                        "grounding_reasoning": a,
                 }
             })
 
@@ -109,9 +86,10 @@ if __name__ == "__main__":
     def create_dataset_jsonl(ds, split):
         records = []
         
-        for i in range(0, len(ds), 3):
+        for i in range(len(ds)):
             q = ds[i]['query']
             a = ds[i]['response']
+            # a = ds[i]['reasoning']
 
             records.append({
                 "prompt": q,
@@ -123,19 +101,17 @@ if __name__ == "__main__":
         return records
 
 
-    TRAIN_SIZE = 2*args.train_size
-    TEST_SIZE = 2*5000
-    VALID_SIZE = 2*100
+    TRAIN_SIZE = args.train_size
+    TEST_SIZE = 1000
+    VALID_SIZE = 100
     MAX_TOKENS = 5096
 
     # Use ~4 chars per token as a rough estimate to filter prompts
     def is_short_enough(example):
         q = example.get('query', '').strip().replace("\n", " ")
         a = example.get('response', '').strip().replace("\n", " ")
-        if "multipleicl" in args.prompt or "combined" in args.prompt:
-            content = instruction_following([q,q], [a,a])
-        else:
-            content = instruction_following(q, a)
+        # r = example.get('reasoning', '').strip().replace("\n", " ")
+        content = LMARENA_PROMPT(q, a)
         return len(content) // 2 < MAX_TOKENS
 
     filtered = full_dataset.filter(is_short_enough)
@@ -146,7 +122,8 @@ if __name__ == "__main__":
 
     train_dataset = create_dataset(filtered.select(range(TRAIN_SIZE)), "train")
     valid_dataset = create_dataset(filtered.select(range(TRAIN_SIZE, TRAIN_SIZE + VALID_SIZE)), "valid")
-    test_dataset = create_dataset(filtered.select(range(TRAIN_SIZE + VALID_SIZE, TRAIN_SIZE + VALID_SIZE + TEST_SIZE)), "test")
+    test_dataset = create_dataset(filtered.select(range(len(filtered)-TEST_SIZE-1, len(filtered))), "test")
+    all_dataset = create_dataset(filtered.select(range(0, len(filtered)-TEST_SIZE)), "all").select(range(0, 10000))
 
     hdfs_dir = args.hdfs_dir
     local_save_dir = args.local_dir
@@ -156,14 +133,15 @@ if __name__ == "__main__":
         local_save_dir = args.local_save_dir
 
     train_dataset.to_parquet(os.path.join(local_save_dir, "train.parquet"))
-    test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
     valid_dataset.to_parquet(os.path.join(local_save_dir, "valid.parquet"))
+    test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
+    all_dataset.to_parquet(os.path.join(local_save_dir, "all.parquet"))
 
-    records = create_dataset_jsonl(filtered.select(range(TRAIN_SIZE)), "train")
-    for record in records:
-        with open('/home/ec2-user/prismatic-synthesis/prismatic-synthesis/data/datasets/alpaca_seed.jsonl', 'a+') as f:
-            f.write(json.dumps(record))
-            f.write("\n")
+    # records = create_dataset_jsonl(filtered.select(range(TRAIN_SIZE)), "train")
+    # for record in records:
+    #     with open('/home/ec2-user/prismatic-synthesis/prismatic-synthesis/data/datasets/numina_seed.jsonl', 'a+') as f:
+    #         f.write(json.dumps(record))
+    #         f.write("\n")
 
     if hdfs_dir is not None:
         makedirs(hdfs_dir)

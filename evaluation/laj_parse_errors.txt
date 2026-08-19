@@ -1,0 +1,2 @@
+It seems like the predicted answer is missing. Please provide the predicted answer so I can evaluate whether it is mathematically equivalent to the reference answer \(a_n=3\cdot2^{n-2}\).
+

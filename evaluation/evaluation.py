@@ -25,31 +25,6 @@ def apply_chat_template(model_name, prompts):
         for p in prompts
     ]
 
-def generate_outputs(llm, sampling_params, args, prompts, num_rounds):
-    all_outputs = []
-    for i in range(num_rounds):
-        prompts = apply_chat_template(args.model_name, prompts)
-
-        outputs = llm.generate(prompts, sampling_params=sampling_params)
-        outputs = [output.outputs[0].text.strip() for output in outputs]
-
-        outputs = [output.split("<answer>")[-1].replace("</answer>", "").strip() for output in outputs]
-        all_outputs.append(outputs)
-    return all_outputs
-
-def evaluate_outputs(predictions, references):
-    embedding_model = LLM('Qwen/Qwen3-Embedding-0.6B', task="embed")
-
-    pred_embs = embedding_model.embed(predictions)
-    pred_embs = torch.tensor([o.outputs.embedding for o in pred_embs])
-
-    ref_embs = embedding_model.embed(references)
-    ref_embs = torch.tensor([o.outputs.embedding for o in ref_embs])
-
-    scores = (pred_embs @ ref_embs.T).diag()
-
-    return scores
-
 LAJ_MATH_PROMPT = """You are an expert mathematical reasoning evaluator.
 
 You will be given a reference answer and a predicted answer. Determine whether they are mathematically equivalent.
@@ -79,6 +54,8 @@ def parse_laj_score(text):
     m = re.search(r'\b([01])\b', text[::-1])
     if m:
         return float(m.group(1))
+    with open('laj_parse_errors.txt', 'a+') as f:
+        f.write(f"{text}\n\n")
     0/0
 
 def evaluate_laj(llm, answers, predictions, laj_prompt):
@@ -107,45 +84,74 @@ def evaluate_rouge(rouge_metric, answers, outputs):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--model_name", default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--exp_name", default="qwen7b")
-    parser.add_argument("--data_dir_path", default="/home/ishikaa2/AcquisitionSynthesis/data")
-    parser.add_argument("--num_rounds", default=5, type=int)
     args = parser.parse_args()
 
-    DATA_DIR_PATH = args.data_dir_path
+    with open(f'result_files/{args.exp_name}.pkl', 'rb') as f:
+        evaluation_settings = pickle.load(f)
 
-    evaluation_settings = {
-        "numina": {"path": os.path.join(DATA_DIR_PATH, "numina/test.parquet"), "metric": "laj", "laj_prompt": LAJ_MATH_PROMPT},
-        "medmcqa": {"path": os.path.join(DATA_DIR_PATH, "medmcqa/test.parquet"), "metric": "rouge"},
-        "aime": {"path": os.path.join(DATA_DIR_PATH, "aime/test.parquet"), "metric": "laj", "laj_prompt": LAJ_MATH_PROMPT},
-        "omnimath": {"path": os.path.join(DATA_DIR_PATH, "omnimath/test.parquet"), "metric": "laj", "laj_prompt": LAJ_MATH_PROMPT},
-        "pubmedqa": {"path": os.path.join(DATA_DIR_PATH, "pubmedqa/test.parquet"), "metric": "rouge"},
-        "alpaca": {"path": os.path.join(DATA_DIR_PATH, "alpaca/test.parquet"), "metric": "laj", "laj_prompt": LAJ_ALPACA_PROMPT},
-    }
-
-    ### GENERATING OUTPUTS ###
-    llm = LLM(args.model_name, tensor_parallel_size=torch.cuda.device_count(), gpu_memory_utilization=0.7, trust_remote_code=True)
-    sampling_params = SamplingParams(temperature=0.7, max_tokens=2048)
-
+    ### EVALUATING ALL LAJ BENCHMARKS ###
+    llm = LLM(
+        "Qwen/Qwen2.5-32B-Instruct",
+        tensor_parallel_size=torch.cuda.device_count(),
+        gpu_memory_utilization=0.85,
+        trust_remote_code=True,
+        max_model_len=4096,
+        dtype="bfloat16",
+        max_num_seqs=32,
+        enforce_eager=True,
+    )
+    sampling_params = SamplingParams(temperature=0.7, max_tokens=256)
     for eval in evaluation_settings.keys():
-        print("Generating outputs for", eval, args.model_name)
-        grounding_seed = pd.read_parquet(evaluation_settings[eval]["path"], engine='pyarrow')
-        prompts = list(grounding_seed.apply(lambda row: row['extra_info']['grounding_question'], axis=1))
-        answers = list(grounding_seed.apply(lambda row: row['extra_info']['grounding_answer'], axis=1))
+        print("Evaluating LAJ for", eval)
+        if evaluation_settings[eval]["metric"] != "laj":
+            continue
+        answers = evaluation_settings[eval]["answers"]
+        all_outputs = evaluation_settings[eval]["outputs"]
 
-        outputs = generate_outputs(llm, sampling_params, args, prompts, args.num_rounds)
-        evaluation_settings[eval]["outputs"] = outputs
-        evaluation_settings[eval]["prompts"] = prompts
-        evaluation_settings[eval]["answers"] = answers
-
-    ### GENERATING OUTPUTS ###
-        
-    with open(f"result_files/{args.exp_name}.pkl", 'wb') as f:
-        pickle.dump(evaluation_settings, f)
+        all_scores = []
+        for outputs in all_outputs:
+            scores = evaluate_laj(llm, answers, outputs, evaluation_settings[eval]["laj_prompt"])
+            all_scores.append(scores)
+        evaluation_settings[eval]["scores"] = all_scores
 
     del llm, sampling_params
     destroy_model_parallel()
     destroy_distributed_environment()
     gc.collect()
     torch.cuda.empty_cache()
+    ### EVALUATING ALL LAJ BENCHMARKS ###
+
+
+
+
+    ### EVALUATING ALL ROUGE BENCHMARKS ###
+    rouge_metric = evaluate.load('rouge')
+    for eval in evaluation_settings.keys():
+        print("Evaluating ROUGE for", eval)
+        if evaluation_settings[eval]["metric"] != "rouge":
+            continue
+        answers = evaluation_settings[eval]["answers"]
+        all_outputs = evaluation_settings[eval]["outputs"]
+
+        all_scores = []
+        for outputs in all_outputs:
+            scores = evaluate_rouge(rouge_metric, answers, outputs)
+            all_scores.append(scores)
+        evaluation_settings[eval]["scores"] = all_scores
+    del rouge_metric
+    ### EVALUATING ALL ROUGE BENCHMARKS ###
+
+
+    with open(f"result_files/{args.exp_name}.pkl", 'wb') as f:
+        pickle.dump(evaluation_settings, f)
+
+    ### OUTPUTTING RESULTS ###
+    for eval in evaluation_settings.keys():
+        scores = evaluation_settings[eval]["scores"]
+        with open('results.txt', 'a+') as f:
+            mean_scores = np.array(scores).mean(axis=1)
+            mean = np.mean(mean_scores)
+            std = np.std(mean_scores)
+            f.write(f"{args.exp_name}\t{eval}\t{mean}\t{std}\t{mean_scores}\n")
+    ### OUTPUTTING RESULTS ###
