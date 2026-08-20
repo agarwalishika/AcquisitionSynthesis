@@ -68,6 +68,23 @@ _proximity_queue: WorkerQueue | None = None
 _diversity_queue: WorkerQueue | None = None
 _answer_variance_queue: WorkerQueue | None = None
 
+# Running facility-location ground set for diversity, built purely from the stream
+# of generated samples (not the pre-existing dataset). _diversity_archive holds
+# kept sample embeddings; _diversity_best_d[i] is the largest distance
+# (1 - cosine sim) any later sample has achieved from _diversity_archive[i] (each
+# entry starts at 0, its own self-distance). Only ever touched from the single
+# diversity worker thread, so mutation without a lock is safe. Reset in
+# init_diversity_worker on service (re)start.
+_diversity_archive: torch.Tensor | None = None
+_diversity_best_d: torch.Tensor | None = None
+
+# Minimum marginal gain a sample must produce to be admitted to the ground set.
+# Without this, a near-duplicate still nudges some archive member's best_d by an
+# infinitesimal amount and would count as "updating the frontier," so the archive
+# would never actually get pruned. Keeps archive size (and per-sample compute)
+# bounded over a long run.
+_DIVERSITY_MIN_GAIN_TO_ADMIT = 0.01
+
 
 # --- pure compute functions ---
 
@@ -104,16 +121,41 @@ def _compute_proximity(reqs, embedding_model, cluster_centers_tensor):
     ]
 
 
-def _compute_diversity(reqs, embedding_model, cluster_centers_tensor):
+def _compute_diversity(reqs, embedding_model):
+    """
+    facility location esque
+    """
+    global _diversity_archive, _diversity_best_d
+
     questions = [req.data['question'] for req in reqs]
     completion_embeddings = embedding_model.embed(questions)
     completion_tensor = torch.Tensor([c.outputs.embedding for c in completion_embeddings])
-    completion_tensor = completion_tensor.to(cluster_centers_tensor.dtype)
-    similarities = completion_tensor @ cluster_centers_tensor.T  # (B, 100)
-    return [
-        RewardsResponse(acquisition_reward=float(1.0 - similarities[i].max().item()))
-        for i in range(len(reqs))
-    ]
+
+    results = []
+    for i in range(len(reqs)):
+        x = completion_tensor[i]
+
+        if _diversity_archive is None:
+            gain, admit = 1.0, True
+        else:
+            sims = _diversity_archive @ x  # (N,)
+            d = 1.0 - sims
+            gain = torch.clamp(d - _diversity_best_d, min=0.0).mean().item()
+            admit = gain > _DIVERSITY_MIN_GAIN_TO_ADMIT
+            if admit:
+                _diversity_best_d = torch.maximum(_diversity_best_d, d)
+
+        results.append(RewardsResponse(acquisition_reward=float(gain)))
+
+        if admit:
+            x_row, self_d = x.unsqueeze(0), torch.tensor([0.0], dtype=x.dtype)
+            if _diversity_archive is None:
+                _diversity_archive, _diversity_best_d = x_row, self_d
+            else:
+                _diversity_archive = torch.cat([_diversity_archive, x_row], dim=0)
+                _diversity_best_d = torch.cat([_diversity_best_d, self_d], dim=0)
+
+    return results
 
 
 def _compute_gradient(reqs, tokenizer, model):
@@ -187,10 +229,12 @@ def init_proximity_worker(embedding_model, cluster_centers_tensor):
     _proximity_queue = WorkerQueue()
     _proximity_queue.start(_compute_proximity, embedding_model, cluster_centers_tensor)
 
-def init_diversity_worker(embedding_model, cluster_centers_tensor):
-    global _diversity_queue
+def init_diversity_worker(embedding_model):
+    global _diversity_queue, _diversity_archive, _diversity_best_d
     _diversity_queue = WorkerQueue()
-    _diversity_queue.start(_compute_diversity, embedding_model, cluster_centers_tensor)
+    _diversity_archive = None
+    _diversity_best_d = None
+    _diversity_queue.start(_compute_diversity, embedding_model)
 
 def init_answer_variance_worker(language_model, sampling_params, embedding_model):
     global _answer_variance_queue

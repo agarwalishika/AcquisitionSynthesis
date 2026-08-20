@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/ec2-user/grpo_synthesis/')
+sys.path.append('/home/ec2-user/AcquisitionSynthesis/')
 
 import os
 from typing import List, Dict
@@ -144,7 +144,7 @@ def start_service(req: ActivateRequest):
         embedding_model = LLM(model_name, task="embed")
         cluster_centers_tensor = cluster_proximity(embedding_model, dataset_name)
         service_utils.init_proximity_worker(embedding_model, cluster_centers_tensor)
-        service_utils.init_diversity_worker(embedding_model, cluster_centers_tensor)
+        service_utils.init_diversity_worker(embedding_model)
         return {"status": "ok", "service": req.service}
 
     if "gradient" in req.service:
@@ -198,4 +198,4 @@ def answer_variance_rewards(req: RewardsRequest, x_api_key: str | None = Header(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("all:app", host=SERVER_IP, port=5145)
+    uvicorn.run("all:app", host=SERVER_IP, port=5141)
